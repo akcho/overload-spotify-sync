@@ -15,6 +15,10 @@ from typing import List, Dict, Optional
 import time
 from dotenv import load_dotenv
 from config import Config
+import yt_dlp
+import requests
+from bs4 import BeautifulSoup
+import json
 
 # Load environment variables
 load_dotenv()
@@ -102,11 +106,167 @@ class OverloadSpotifySync:
                     'url': submission.url,
                     'score': submission.score,
                     'id': submission.id,
-                    'created': created_time
+                    'created': created_time,
+                    'submission': submission  # Keep submission object for comment access
                 })
                 
         logger.info(f"Found {len(posts)} posts with {self.config.min_upvotes}+ upvotes")
         return posts
+    
+    def is_discussion_thread(self, submission) -> bool:
+        """Check if a submission qualifies as a discussion thread based on 3 criteria:
+        1. Comment count > 20
+        2. Post upvotes > 5 
+        3. Over 25% of comments contain URLs or dashes (track indicators)
+        """
+        # Criterion 1: Comment count > 20
+        if submission.num_comments <= 20:
+            return False
+            
+        # Criterion 2: Post upvotes > 5
+        if submission.score <= 5:
+            return False
+            
+        # Criterion 3: Calculate track sharing density
+        try:
+            track_density = self.calculate_track_sharing_density(submission)
+            if track_density < 0.25:  # Less than 25%
+                return False
+                
+            logger.info(f"  → Discussion thread detected: {submission.num_comments} comments, "
+                       f"{submission.score} upvotes, {track_density:.1%} track sharing density")
+            return True
+            
+        except Exception as e:
+            logger.debug(f"  → Error checking track density: {e}")
+            return False
+    
+    def calculate_track_sharing_density(self, submission) -> float:
+        """Calculate percentage of comments containing URLs or dashes (track indicators)"""
+        try:
+            # Get a sample of comments efficiently (don't load all nested comments)
+            submission.comments.replace_more(limit=5)  # Limited to avoid performance issues
+            all_comments = submission.comments.list()
+            
+            if not all_comments:
+                return 0.0
+                
+            track_indicating_comments = 0
+            total_comments = len(all_comments)
+            
+            for comment in all_comments:
+                if hasattr(comment, 'body') and comment.body:
+                    comment_text = comment.body.lower()
+                    # Check for URLs or dash patterns indicating track sharing
+                    has_url = any(domain in comment_text for domain in [
+                        'youtube.com', 'youtu.be', 'spotify.com', 'soundcloud.com', 
+                        'bandcamp.com', 'http', 'www.'
+                    ])
+                    has_dash = ' - ' in comment_text
+                    has_by = ' by ' in comment_text
+                    
+                    if has_url or has_dash or has_by:
+                        track_indicating_comments += 1
+            
+            density = track_indicating_comments / total_comments if total_comments > 0 else 0.0
+            logger.debug(f"  → Track sharing density: {track_indicating_comments}/{total_comments} = {density:.1%}")
+            return density
+            
+        except Exception as e:
+            logger.debug(f"  → Error calculating track density: {e}")
+            return 0.0
+    
+    def get_comments_from_discussion_threads(self, posts: List[Dict]) -> List[Dict]:
+        """Extract comments from posts that qualify as discussion threads"""
+        comments_data = []
+        
+        for post in posts:
+            submission = post['submission']
+            
+            if self.is_discussion_thread(submission):
+                logger.info(f"Processing discussion thread: {post['title'][:50]}...")
+                
+                try:
+                    # Get comments with limited depth for performance
+                    submission.comments.replace_more(limit=10)
+                    all_comments = submission.comments.list()
+                    
+                    # Filter comments by upvote threshold
+                    min_comment_upvotes = int(os.getenv('MIN_COMMENT_UPVOTES', '3'))
+                    qualifying_comments = [
+                        comment for comment in all_comments 
+                        if (hasattr(comment, 'score') and comment.score >= min_comment_upvotes and
+                            hasattr(comment, 'body') and comment.body and 
+                            len(comment.body.strip()) > 10)  # Avoid very short comments
+                    ]
+                    
+                    logger.info(f"  → Found {len(qualifying_comments)} comments with {min_comment_upvotes}+ upvotes")
+                    
+                    for comment in qualifying_comments:
+                        comments_data.append({
+                            'body': comment.body,
+                            'score': comment.score,
+                            'id': comment.id,
+                            'parent_post_title': post['title'],
+                            'parent_post_id': post['id']
+                        })
+                        
+                except Exception as e:
+                    logger.error(f"  → Error processing comments: {e}")
+                    continue
+        
+        logger.info(f"Total qualifying comments from discussion threads: {len(comments_data)}")
+        return comments_data
+    
+    def extract_music_info_from_comment(self, comment: Dict) -> Optional[Dict]:
+        """Extract artist and track info from comment text"""
+        comment_text = comment['body']
+        
+        # Clean common comment prefixes/suffixes
+        cleaned_text = self.process_comment_text(comment_text)
+        
+        # Try to extract URLs first
+        url_match = re.search(r'(https?://[^\s\)]+)', cleaned_text)
+        if url_match:
+            url = url_match.group(1)
+            # Use existing URL extraction logic
+            fake_post = {'url': url, 'title': cleaned_text}
+            music_info = self.extract_music_info(fake_post)
+            if music_info:
+                music_info['source'] = 'comment_url'
+                music_info['comment_score'] = comment['score']
+                return music_info
+        
+        # Try to extract from text using existing title parsing
+        music_info = self.extract_from_title(cleaned_text)
+        if music_info:
+            music_info['source'] = 'comment_text'
+            music_info['comment_score'] = comment['score']
+            return music_info
+        
+        return None
+    
+    def process_comment_text(self, text: str) -> str:
+        """Clean comment text for track extraction"""
+        # Remove common prefixes
+        prefixes_to_remove = [
+            r'^check\s+out\s*:?\s*',
+            r'^listening\s+to\s*:?\s*', 
+            r'^currently\s+playing\s*:?\s*',
+            r'^now\s+playing\s*:?\s*',
+            r'^this\s+is\s+good\s*:?\s*',
+            r'^recommend\s*:?\s*',
+            r'^try\s+this\s*:?\s*'
+        ]
+        
+        cleaned = text.strip()
+        for pattern in prefixes_to_remove:
+            cleaned = re.sub(pattern, '', cleaned, flags=re.IGNORECASE)
+        
+        # Remove quotes and clean up
+        cleaned = cleaned.strip('"\'')
+        
+        return cleaned
     
     def extract_music_info(self, post: Dict) -> Optional[Dict]:
         """Extract artist and track info from various music platforms"""
@@ -174,12 +334,42 @@ class OverloadSpotifySync:
         return False
     
     def extract_youtube_info(self, url: str, title: str) -> Optional[Dict]:
-        """Extract info from YouTube URL and title"""
-        # First, check for remix patterns and extract remix info
-        remix_info = self.extract_remix_info(title)
+        """Extract info from YouTube URL using yt-dlp for accurate metadata"""
+        
+        # First try to get metadata directly from YouTube
+        try:
+            ydl_opts = {
+                'quiet': True,
+                'no_warnings': True,
+            }
+            
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                info = ydl.extract_info(url, download=False)
+                
+                yt_title = info.get('title', '').strip()
+                uploader = info.get('uploader', '').strip()
+                
+                if yt_title:
+                    if self.debug:
+                        logger.debug(f"YouTube metadata - Title: {yt_title}, Uploader: {uploader}")
+                    
+                    # Use YouTube title for parsing instead of post title
+                    title_to_parse = yt_title
+                else:
+                    # Fall back to post title
+                    title_to_parse = title
+                    
+        except Exception as e:
+            if self.debug:
+                logger.debug(f"Failed to extract YouTube metadata: {e}")
+            # Fall back to post title
+            title_to_parse = title
+        
+        # Check for remix patterns and extract remix info
+        remix_info = self.extract_remix_info(title_to_parse)
         
         # Clean title by removing remix information for main parsing
-        clean_title = self.clean_title_for_parsing(title)
+        clean_title = self.clean_title_for_parsing(title_to_parse)
         
         # Common patterns for artist - track in titles
         patterns = [
@@ -236,8 +426,114 @@ class OverloadSpotifySync:
         return self.extract_youtube_info(url, title)
     
     def extract_bandcamp_info(self, url: str, title: str) -> Optional[Dict]:
-        """Extract info from Bandcamp (similar to YouTube)"""
-        return self.extract_youtube_info(url, title)
+        """Extract info from Bandcamp URL using web scraping for accurate metadata"""
+        
+        # First try to get metadata directly from Bandcamp
+        try:
+            headers = {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+            }
+            
+            response = requests.get(url, headers=headers, timeout=10)
+            if response.status_code == 200:
+                soup = BeautifulSoup(response.content, 'html.parser')
+                
+                # Look for structured data in script tags
+                script_tags = soup.find_all('script', type='application/ld+json')
+                
+                for script in script_tags:
+                    try:
+                        data = json.loads(script.string)
+                        if '@type' in data and data['@type'] == 'MusicRecording':
+                            track_name = data.get('name', '').strip()
+                            artist_name = None
+                            
+                            # Look for artist in byArtist
+                            if 'byArtist' in data:
+                                if isinstance(data['byArtist'], dict):
+                                    artist_name = data['byArtist'].get('name', '').strip()
+                                elif isinstance(data['byArtist'], list) and len(data['byArtist']) > 0:
+                                    artist_name = data['byArtist'][0].get('name', '').strip()
+                            
+                            if track_name:
+                                if self.debug:
+                                    logger.debug(f"Bandcamp metadata - Artist: {artist_name}, Track: {track_name}")
+                                
+                                # Check for remix info in track name
+                                remix_info = self.extract_remix_info(track_name)
+                                
+                                result = {
+                                    'artist': artist_name or '',
+                                    'track': track_name,
+                                    'source': 'bandcamp'
+                                }
+                                result.update(remix_info)
+                                return result
+                                
+                    except json.JSONDecodeError:
+                        continue
+                
+                # Fallback: try to extract from page title
+                title_tag = soup.find('title')
+                if title_tag:
+                    page_title = title_tag.get_text().strip()
+                    
+                    # Bandcamp titles are often "Track | Artist"
+                    if ' | ' in page_title:
+                        parts = page_title.split(' | ')
+                        if len(parts) >= 2:
+                            track_name = parts[0].strip()
+                            artist_name = parts[1].strip()
+                            
+                            if self.debug:
+                                logger.debug(f"Bandcamp fallback - Artist: {artist_name}, Track: {track_name}")
+                            
+                            remix_info = self.extract_remix_info(track_name)
+                            
+                            result = {
+                                'artist': artist_name,
+                                'track': track_name,
+                                'source': 'bandcamp'
+                            }
+                            result.update(remix_info)
+                            return result
+                            
+        except Exception as e:
+            if self.debug:
+                logger.debug(f"Failed to extract Bandcamp metadata: {e}")
+        
+        # Fall back to parsing the post title like YouTube
+        remix_info = self.extract_remix_info(title)
+        clean_title = self.clean_title_for_parsing(title)
+        
+        # Try common patterns
+        patterns = [
+            r'^(.+?)\s*[-–—]\s*(.+)$',           # Artist - Track
+            r'^(.+?)\s*:\s*(.+)$',               # Artist: Track  
+            r'^(.+?)\s+by\s+(.+)$',              # Track by Artist
+            r'^\[(.+?)\]\s*(.+)$',               # [Artist] Track
+            r'^(.+?)\s*\|\s*(.+)$',              # Artist | Track
+        ]
+        
+        for pattern in patterns:
+            match = re.match(pattern, clean_title.strip(), re.IGNORECASE)
+            if match:
+                result = {
+                    'artist': match.group(1).strip(),
+                    'track': match.group(2).strip(),
+                    'source': 'bandcamp'
+                }
+                result.update(remix_info)
+                return result
+        
+        # Final fallback
+        result = {
+            'artist': '',
+            'track': clean_title.strip(),
+            'source': 'bandcamp'
+        }
+        result.update(remix_info)
+        return result
     
     def extract_from_title(self, title: str) -> Optional[Dict]:
         """Try to extract artist/track from Reddit post title"""
@@ -413,6 +709,156 @@ class OverloadSpotifySync:
         logger.info(f"Could not find on Spotify: {artist} - {track}{remix_info}")
         return None
     
+    def search_spotify_with_fallback(self, music_info: Dict, post: Dict) -> Optional[str]:
+        """Search Spotify with fallback strategies when primary search fails"""
+        
+        # Try primary search first (extracted metadata)
+        track_id = self.search_spotify(music_info)
+        if track_id:
+            return track_id
+        
+        # If no results, try fallback strategies
+        source = music_info.get('source', '')
+        original_artist = music_info.get('artist', '')
+        original_track = music_info.get('track', '')
+        
+        if self.debug:
+            logger.debug(f"Primary search failed for {original_artist} - {original_track}, trying fallbacks...")
+        
+        # Fallback 1: Try parsing the original post title instead of extracted metadata
+        if source in ['youtube', 'bandcamp']:
+            try:
+                fallback_info = self.extract_from_title(post['title'])
+                if fallback_info:
+                    fallback_artist = fallback_info.get('artist', '')
+                    fallback_track = fallback_info.get('track', '')
+                    
+                    # Only try fallback if it's different from what we already tried
+                    if (fallback_artist != original_artist or fallback_track != original_track):
+                        if self.debug:
+                            logger.debug(f"Trying post title fallback: {fallback_artist} - {fallback_track}")
+                        
+                        track_id = self.search_spotify(fallback_info)
+                        if track_id:
+                            logger.info(f"✓ Found using post title fallback: {fallback_artist} - {fallback_track}")
+                            return track_id
+            except Exception as e:
+                if self.debug:
+                    logger.debug(f"Post title fallback failed: {e}")
+        
+        # Fallback 2: Try cleaning the extracted metadata (remove label info, etc.)
+        cleaned_info = self.clean_metadata_for_search(music_info, post)
+        if cleaned_info:
+            cleaned_artist = cleaned_info.get('artist', '')
+            cleaned_track = cleaned_info.get('track', '')
+            
+            # Only try if different from original
+            if (cleaned_artist != original_artist or cleaned_track != original_track):
+                if self.debug:
+                    logger.debug(f"Trying cleaned metadata: {cleaned_artist} - {cleaned_track}")
+                
+                track_id = self.search_spotify(cleaned_info)
+                if track_id:
+                    logger.info(f"✓ Found using cleaned metadata: {cleaned_artist} - {cleaned_track}")
+                    return track_id
+        
+        return None
+    
+    def clean_metadata_for_search(self, music_info: Dict, post: Dict) -> Optional[Dict]:
+        """Clean metadata by removing label info and other noise"""
+        
+        artist = music_info.get('artist', '').strip()
+        track = music_info.get('track', '').strip()
+        post_title = post.get('title', '')
+        
+        # Common label patterns to detect and extract real artist from
+        label_patterns = [
+            r'^(.+?)\s*[-–—]\s*(.+?)\s*\[(.+?)\]',  # "Artist - Track [Label]" -> try "Artist - Track"
+            r'^(.+?)\s*[-–—]\s*(.+?)\s*\((.+?)\s*Records?\)',  # "Artist - Track (Label Records)"
+            r'^(.+?)\s+Records?\s*[-–—]\s*(.+)',   # "Label Records - Track" -> try from post title
+            r'^(.+?)\s+Recordings?\s*[-–—]\s*(.+)',  # "Label Recordings - Track"
+        ]
+        
+        cleaned_info = None
+        
+        # Try to detect if artist looks like a label
+        for pattern in label_patterns:
+            match = re.match(pattern, f"{artist} - {track}", re.IGNORECASE)
+            if match:
+                if self.debug:
+                    logger.debug(f"Detected label pattern, trying to extract from post title: '{post_title}'")
+                
+                # Try to extract real artist/track from post title
+                title_patterns = [
+                    r'^(.+?)\s*[-–—]\s*(.+?)\s*\[',  # "Artist - Track [anything]"
+                    r'^(.+?)\s*[-–—]\s*(.+?)$',      # "Artist - Track"
+                ]
+                
+                for title_pattern in title_patterns:
+                    title_match = re.match(title_pattern, post_title.strip(), re.IGNORECASE)
+                    if title_match:
+                        potential_artist = title_match.group(1).strip()
+                        potential_track = title_match.group(2).strip()
+                        
+                        # Clean up track name (remove label info, year, etc.)
+                        potential_track = re.sub(r'\s*\[.*?\]$', '', potential_track)
+                        potential_track = re.sub(r'\s*\(.*?\)$', '', potential_track) 
+                        
+                        if potential_artist and potential_track:
+                            cleaned_info = music_info.copy()
+                            cleaned_info['artist'] = potential_artist
+                            cleaned_info['track'] = potential_track
+                            break
+                break
+        
+        return cleaned_info
+    
+    def normalize_for_matching(self, text: str) -> str:
+        """Normalize text for matching (remove spaces, punctuation, etc.)"""
+        import re
+        # Remove spaces, punctuation, convert to lowercase
+        normalized = re.sub(r'[^a-zA-Z0-9]', '', text.lower())
+        return normalized
+    
+    def is_clean_title(self, title: str) -> bool:
+        """Check if a title is 'clean' (no version/remix info)"""
+        title_lower = title.lower()
+        
+        # If it already has version indicators, it's not clean
+        version_indicators = [
+            'remix', 'mix', 'edit', 'version', 'rework', 'vip', 'bootleg', 
+            'extended', 'radio', 'instrumental', 'acapella', 'live',
+            'remaster', 'remastered', 'deluxe', 'special', 'alternate'
+        ]
+        
+        for indicator in version_indicators:
+            if indicator in title_lower:
+                return False
+                
+        # If it has parentheses or brackets with content, likely has version info
+        if re.search(r'\[.+\]|\(.+\)', title):
+            return False
+            
+        return True
+    
+    def has_version_suffix(self, spotify_title: str) -> bool:
+        """Check if Spotify title has version/label suffix that wasn't in original query"""
+        spotify_lower = spotify_title.lower()
+        
+        # Common version patterns in Spotify titles
+        version_patterns = [
+            r'-\s+(.*?)\s+(version|mix|edit|remix)',  # " - Something Version/Mix"
+            r'-\s+(extended|radio|instrumental|live)',  # " - Extended/Radio/etc"
+            r'-\s+(remaster|remastered|deluxe)',       # " - Remastered/Deluxe"
+            r'\(\s*(.*?)\s*(version|mix|edit)\s*\)',   # "(Something Version)"
+        ]
+        
+        for pattern in version_patterns:
+            if re.search(pattern, spotify_lower):
+                return True
+                
+        return False
+    
     def build_search_queries(self, artist: str, track: str, is_remix: bool, remixer: str, remix_type: str) -> List[str]:
         """Build prioritized search queries based on remix status"""
         queries = []
@@ -526,7 +972,12 @@ class OverloadSpotifySync:
             if artist:
                 artist_lower = artist.lower()
                 for artist_name in artist_names:
+                    # Direct substring matching
                     if artist_lower in artist_name or artist_name in artist_lower:
+                        score += 10
+                        break
+                    # Try normalized versions (remove spaces/punctuation)
+                    elif self.normalize_for_matching(artist_lower) == self.normalize_for_matching(artist_name):
                         score += 10
                         break
                     # Try matching first word of artist (e.g., "Deadmau5" from "Deadmau5 feat. Someone")
@@ -541,6 +992,13 @@ class OverloadSpotifySync:
             # Strong track name match - be more strict
             if track and track.lower() in track_name:
                 score += 8
+                
+                # PURE TITLE MATCHING: If query is clean but result has version info, penalize heavily
+                if self.is_clean_title(track) and self.has_version_suffix(track_name):
+                    score -= 15  # Heavy penalty - should eliminate most matches
+                    if self.debug:
+                        logger.debug(f"Pure title penalty (-15): '{track}' vs '{track_name}'")
+                        
             elif track:
                 # Partial track name match (require more substantial overlap)
                 track_words = track.lower().split()
@@ -558,7 +1016,12 @@ class OverloadSpotifySync:
             if artist:
                 artist_lower = artist.lower()
                 for artist_name in artist_names:
+                    # Direct substring matching
                     if artist_lower in artist_name or artist_name in artist_lower:
+                        artist_score = 10
+                        break
+                    # Try normalized versions (remove spaces/punctuation)
+                    elif self.normalize_for_matching(artist_lower) == self.normalize_for_matching(artist_name):
                         artist_score = 10
                         break
                     elif len(artist.split()) > 1 and artist.split()[0].lower() in artist_name:
@@ -581,6 +1044,13 @@ class OverloadSpotifySync:
                 # Exact match
                 if track_lower in track_name_lower:
                     track_score = 8
+                    
+                    # Apply pure title penalty in final validation
+                    if self.is_clean_title(track) and self.has_version_suffix(spotify_track['name']):
+                        track_score -= 15
+                        if self.debug:
+                            logger.debug(f"Final validation penalty (-15): '{track}' vs '{spotify_track['name']}'")
+                            
                 # Handle year/version variations - remove common suffixes  
                 elif self.tracks_match_with_variations(track_lower, track_name_lower):
                     track_score = 7
@@ -756,6 +1226,7 @@ class OverloadSpotifySync:
             # Extract music info and search Spotify
             track_ids = []
             
+            # Process regular posts first
             for post in posts:
                 logger.info(f"Processing: {post['title'][:50]}...")
                 
@@ -768,12 +1239,43 @@ class OverloadSpotifySync:
                     remix_info = f"Detected remix: {music_info.get('remixer', 'Unknown')} {music_info.get('remix_type', 'remix')}"
                     logger.info(f"  → {remix_info}")
                 
-                track_id = self.search_spotify(music_info)
+                track_id = self.search_spotify_with_fallback(music_info, post)
                 if track_id:
                     track_ids.append(track_id)
                 
                 # Rate limiting
                 time.sleep(0.5)
+            
+            # Process comments from discussion threads
+            logger.info("\n=== PROCESSING DISCUSSION THREAD COMMENTS ===")
+            comments = self.get_comments_from_discussion_threads(posts)
+            
+            comment_track_count = 0
+            for comment in comments:
+                logger.info(f"Processing comment ({comment['score']} upvotes): {comment['body'][:50]}...")
+                
+                music_info = self.extract_music_info_from_comment(comment)
+                if not music_info:
+                    continue
+                
+                # Enhanced logging for comment-sourced tracks
+                source_type = music_info.get('source', 'unknown')
+                logger.info(f"  → Found track from {source_type} (comment: {comment['score']} upvotes)")
+                
+                # Log remix information if detected
+                if music_info.get('is_remix'):
+                    remix_info = f"Detected remix: {music_info.get('remixer', 'Unknown')} {music_info.get('remix_type', 'remix')}"
+                    logger.info(f"  → {remix_info}")
+                
+                track_id = self.search_spotify_with_fallback(music_info, comment)
+                if track_id:
+                    track_ids.append(track_id)
+                    comment_track_count += 1
+                
+                # Rate limiting
+                time.sleep(0.5)
+            
+            logger.info(f"Found {comment_track_count} additional tracks from discussion thread comments")
             
             if not track_ids:
                 logger.info("No tracks found on Spotify")
