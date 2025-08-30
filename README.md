@@ -112,7 +112,17 @@ MIN_UPVOTES=5 PLAYLIST_NAME="My Custom Playlist" python3 overload_spotify_sync.p
 
 ## Automation
 
-The tool includes scripts for daily automation:
+### Option 1: GitHub Actions (Recommended)
+
+For reliable 24/7 automation that doesn't require your computer to be on:
+
+1. Follow the [GitHub Actions Setup Guide](GITHUB_ACTIONS_SETUP.md)
+2. Runs automatically daily at 11:30 PM UTC
+3. No local computer required - runs in the cloud
+
+### Option 2: Local Cron Jobs
+
+For local automation (requires your computer to be on):
 
 - `scripts/setup.sh`: Initial setup and dependency installation
 - `scripts/daily_sync.sh`: Wrapper script for cron jobs

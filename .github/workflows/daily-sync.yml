@@ -1,0 +1,67 @@
+name: Daily Overload Spotify Sync
+
+on:
+  schedule:
+    # Run daily at 11:30 PM UTC (adjust timezone as needed)
+    - cron: '30 23 * * *'
+  workflow_dispatch: # Allow manual trigger
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+      
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.11'
+        
+    - name: Cache dependencies
+      uses: actions/cache@v3
+      with:
+        path: ~/.cache/pip
+        key: ${{ runner.os }}-pip-${{ hashFiles('requirements.txt') }}
+        restore-keys: |
+          ${{ runner.os }}-pip-
+          
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+        
+    - name: Create .env file from secrets
+      run: |
+        cat > .env << EOF
+        REDDIT_CLIENT_ID=${{ secrets.REDDIT_CLIENT_ID }}
+        REDDIT_CLIENT_SECRET=${{ secrets.REDDIT_CLIENT_SECRET }}
+        SPOTIFY_CLIENT_ID=${{ secrets.SPOTIFY_CLIENT_ID }}
+        SPOTIFY_CLIENT_SECRET=${{ secrets.SPOTIFY_CLIENT_SECRET }}
+        SPOTIFY_REFRESH_TOKEN=${{ secrets.SPOTIFY_REFRESH_TOKEN }}
+        SPOTIFY_REDIRECT_URI=http://127.0.0.1:8888/callback
+        MIN_UPVOTES=${{ vars.MIN_UPVOTES || '3' }}
+        PLAYLIST_NAME=${{ vars.PLAYLIST_NAME || 'notes from r/theoverload' }}
+        EOF
+          
+    - name: Run sync
+      run: python overload_spotify_sync.py
+      env:
+        # Ensure we have all environment variables available
+        REDDIT_CLIENT_ID: ${{ secrets.REDDIT_CLIENT_ID }}
+        REDDIT_CLIENT_SECRET: ${{ secrets.REDDIT_CLIENT_SECRET }}
+        SPOTIFY_CLIENT_ID: ${{ secrets.SPOTIFY_CLIENT_ID }}
+        SPOTIFY_CLIENT_SECRET: ${{ secrets.SPOTIFY_CLIENT_SECRET }}
+        SPOTIFY_REFRESH_TOKEN: ${{ secrets.SPOTIFY_REFRESH_TOKEN }}
+        SPOTIFY_REDIRECT_URI: http://127.0.0.1:8888/callback
+        MIN_UPVOTES: ${{ vars.MIN_UPVOTES || '3' }}
+        PLAYLIST_NAME: ${{ vars.PLAYLIST_NAME || 'notes from r/theoverload' }}
+        
+    - name: Upload logs as artifact
+      uses: actions/upload-artifact@v3
+      if: always()
+      with:
+        name: sync-logs-${{ github.run_date }}
+        path: overload_spotify_sync.log
+        retention-days: 30
