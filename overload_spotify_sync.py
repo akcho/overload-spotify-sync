@@ -56,7 +56,8 @@ class OverloadSpotifySync:
         """Setup Spotify client with refresh token support for GitHub Actions"""
         refresh_token = os.getenv('SPOTIFY_REFRESH_TOKEN')
         
-        if refresh_token:
+        if refresh_token and refresh_token.strip():
+            logger.info("Using refresh token for headless authentication")
             # Use refresh token for headless authentication (GitHub Actions)
             auth_manager = SpotifyOAuth(
                 client_id=self.config.spotify_client_id,
@@ -64,7 +65,8 @@ class OverloadSpotifySync:
                 redirect_uri=self.config.spotify_redirect_uri,
                 scope='playlist-modify-public playlist-modify-private',
                 cache_path=None,  # Don't use cache file in GitHub Actions
-                show_dialog=False
+                show_dialog=False,
+                open_browser=False  # Explicitly disable browser opening
             )
             
             # Set the refresh token directly
@@ -76,6 +78,7 @@ class OverloadSpotifySync:
             
             return spotipy.Spotify(auth_manager=auth_manager)
         else:
+            logger.info("No refresh token found, using interactive authentication")
             # Use standard OAuth flow for local development
             return spotipy.Spotify(auth_manager=SpotifyOAuth(
                 client_id=self.config.spotify_client_id,
