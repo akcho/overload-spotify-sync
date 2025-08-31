@@ -72,11 +72,23 @@ class OverloadSpotifySync:
             # Set the refresh token directly
             token_info = {
                 'refresh_token': refresh_token,
-                'expires_at': 0  # Force token refresh
+                'expires_at': 0,  # Force token refresh
+                'access_token': None,  # Will be populated on first request
+                'scope': 'playlist-modify-public playlist-modify-private'
             }
             auth_manager.token_info = token_info
             
-            return spotipy.Spotify(auth_manager=auth_manager)
+            spotify_client = spotipy.Spotify(auth_manager=auth_manager)
+            
+            # Test the connection immediately to ensure the refresh token works
+            try:
+                user_info = spotify_client.current_user()
+                logger.info(f"Successfully authenticated as: {user_info.get('display_name', user_info.get('id', 'Unknown'))}")
+            except Exception as e:
+                logger.error(f"Failed to authenticate with refresh token: {e}")
+                raise
+                
+            return spotify_client
         else:
             logger.info("No refresh token found, using interactive authentication")
             # Use standard OAuth flow for local development
