@@ -58,46 +58,55 @@ class OverloadSpotifySync:
         
         if refresh_token and refresh_token.strip():
             logger.info("Using refresh token for headless authentication")
-            # Use refresh token for headless authentication (GitHub Actions)
-            auth_manager = SpotifyOAuth(
-                client_id=self.config.spotify_client_id,
-                client_secret=self.config.spotify_client_secret,
-                redirect_uri=self.config.spotify_redirect_uri,
-                scope='playlist-modify-public playlist-modify-private',
-                cache_path=None,  # Don't use cache file in GitHub Actions
-                show_dialog=False,
-                open_browser=False  # Explicitly disable browser opening
-            )
             
-            # Set the refresh token directly
-            token_info = {
-                'refresh_token': refresh_token,
-                'expires_at': 0,  # Force token refresh
-                'access_token': None,  # Will be populated on first request
-                'scope': 'playlist-modify-public playlist-modify-private'
-            }
-            auth_manager.token_info = token_info
-            
-            spotify_client = spotipy.Spotify(auth_manager=auth_manager)
-            
-            # Test the connection immediately to ensure the refresh token works
             try:
+                # Use refresh token for headless authentication (GitHub Actions)
+                auth_manager = SpotifyOAuth(
+                    client_id=self.config.spotify_client_id,
+                    client_secret=self.config.spotify_client_secret,
+                    redirect_uri=self.config.spotify_redirect_uri,
+                    scope='playlist-modify-public playlist-modify-private',
+                    cache_path=None,  # Don't use cache file in GitHub Actions
+                    show_dialog=False,
+                    open_browser=False  # Explicitly disable browser opening
+                )
+                
+                # Create a token info structure
+                import time
+                token_info = {
+                    'access_token': None,
+                    'refresh_token': refresh_token,
+                    'expires_at': int(time.time()) - 1,  # Ensure it's expired so it refreshes
+                    'expires_in': 3600,
+                    'scope': 'playlist-modify-public playlist-modify-private',
+                    'token_type': 'Bearer'
+                }
+                
+                # Set up the auth manager with our token info
+                auth_manager.token_info = token_info
+                
+                # Create Spotify client
+                spotify_client = spotipy.Spotify(auth_manager=auth_manager)
+                
+                # Test the connection immediately
                 user_info = spotify_client.current_user()
                 logger.info(f"Successfully authenticated as: {user_info.get('display_name', user_info.get('id', 'Unknown'))}")
-            except Exception as e:
-                logger.error(f"Failed to authenticate with refresh token: {e}")
-                raise
                 
-            return spotify_client
-        else:
-            logger.info("No refresh token found, using interactive authentication")
-            # Use standard OAuth flow for local development
-            return spotipy.Spotify(auth_manager=SpotifyOAuth(
-                client_id=self.config.spotify_client_id,
-                client_secret=self.config.spotify_client_secret,
-                redirect_uri=self.config.spotify_redirect_uri,
-                scope='playlist-modify-public playlist-modify-private'
-            ))
+                return spotify_client
+                
+            except Exception as e:
+                logger.error(f"Refresh token authentication failed: {e}")
+                logger.info("Falling back to interactive authentication (will fail in CI)")
+                # Fall through to interactive auth
+        
+        logger.info("Using interactive authentication (local development only)")
+        # Use standard OAuth flow for local development
+        return spotipy.Spotify(auth_manager=SpotifyOAuth(
+            client_id=self.config.spotify_client_id,
+            client_secret=self.config.spotify_client_secret,
+            redirect_uri=self.config.spotify_redirect_uri,
+            scope='playlist-modify-public playlist-modify-private'
+        ))
         
     def get_recent_posts(self) -> List[Dict]:
         """Fetch recent posts from r/theoverload with minimum upvotes"""
