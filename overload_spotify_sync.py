@@ -60,44 +60,60 @@ class OverloadSpotifySync:
             logger.info("Using refresh token for headless authentication")
             
             try:
-                # Use refresh token for headless authentication (GitHub Actions)
+                # Create auth manager
                 auth_manager = SpotifyOAuth(
                     client_id=self.config.spotify_client_id,
                     client_secret=self.config.spotify_client_secret,
                     redirect_uri=self.config.spotify_redirect_uri,
-                    scope='playlist-modify-public playlist-modify-private',
-                    cache_path=None,  # Don't use cache file in GitHub Actions
-                    show_dialog=False,
-                    open_browser=False  # Explicitly disable browser opening
+                    scope='playlist-modify-public playlist-modify-private'
                 )
                 
-                # Create a token info structure
-                import time
-                token_info = {
-                    'access_token': None,
+                # Use the refresh token to get a fresh access token
+                import requests
+                token_url = "https://accounts.spotify.com/api/token"
+                
+                data = {
+                    'grant_type': 'refresh_token',
                     'refresh_token': refresh_token,
-                    'expires_at': int(time.time()) - 1,  # Ensure it's expired so it refreshes
-                    'expires_in': 3600,
-                    'scope': 'playlist-modify-public playlist-modify-private',
-                    'token_type': 'Bearer'
+                    'client_id': self.config.spotify_client_id,
+                    'client_secret': self.config.spotify_client_secret
                 }
                 
-                # Set up the auth manager with our token info
-                auth_manager.token_info = token_info
+                response = requests.post(token_url, data=data)
                 
-                # Create Spotify client
-                spotify_client = spotipy.Spotify(auth_manager=auth_manager)
-                
-                # Test the connection immediately
-                user_info = spotify_client.current_user()
-                logger.info(f"Successfully authenticated as: {user_info.get('display_name', user_info.get('id', 'Unknown'))}")
-                
-                return spotify_client
-                
+                if response.status_code == 200:
+                    token_data = response.json()
+                    logger.info("Successfully refreshed access token")
+                    
+                    # Create the token info structure that spotipy expects
+                    token_info = {
+                        'access_token': token_data['access_token'],
+                        'token_type': token_data['token_type'],
+                        'expires_in': token_data['expires_in'],
+                        'expires_at': int(time.time()) + token_data['expires_in'],
+                        'scope': token_data.get('scope', 'playlist-modify-public playlist-modify-private'),
+                        'refresh_token': token_data.get('refresh_token', refresh_token)  # Use new refresh token if provided
+                    }
+                    
+                    # Set the token info on the auth manager
+                    auth_manager.token_info = token_info
+                    
+                    # Create Spotify client
+                    spotify_client = spotipy.Spotify(auth_manager=auth_manager)
+                    
+                    # Test the connection
+                    user_info = spotify_client.current_user()
+                    logger.info(f"Successfully authenticated as: {user_info.get('display_name', user_info.get('id', 'Unknown'))}")
+                    
+                    return spotify_client
+                else:
+                    logger.error(f"Token refresh failed with status {response.status_code}: {response.text}")
+                    
             except Exception as e:
                 logger.error(f"Refresh token authentication failed: {e}")
-                logger.info("Falling back to interactive authentication (will fail in CI)")
-                # Fall through to interactive auth
+                # In GitHub Actions, we should fail here rather than falling back to interactive
+                if os.getenv('GITHUB_ACTIONS'):
+                    raise Exception("Authentication failed in GitHub Actions environment")
         
         logger.info("Using interactive authentication (local development only)")
         # Use standard OAuth flow for local development
