@@ -115,8 +115,8 @@ class OverloadSpotifySync:
         posts = []
         subreddit = self.reddit.subreddit('theoverload')
         
-        # Get posts from the last day (or week for testing)
-        time_window = int(os.getenv('TIME_WINDOW_DAYS', '1'))
+        # Get posts from the last week
+        time_window = 7
         cutoff_date = datetime.now() - timedelta(days=time_window)
         logger.info(f"Looking for posts from last {time_window} day(s)")
         
