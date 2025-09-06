@@ -299,10 +299,7 @@ class OverloadSpotifySync:
         url = post['url']
         title = post['title']
         
-        # Skip posts that are clearly not about music
-        if self.is_non_music_post(title):
-            logger.info(f"  → Skipping non-music post")
-            return None
+        # Let all posts through - we'll determine if they're music during metadata extraction
         
         # YouTube
         if 'youtube.com' in url or 'youtu.be' in url:
