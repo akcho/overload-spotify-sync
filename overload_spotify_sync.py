@@ -60,14 +60,6 @@ class OverloadSpotifySync:
             logger.info("Using refresh token for headless authentication")
             
             try:
-                # Create auth manager
-                auth_manager = SpotifyOAuth(
-                    client_id=self.config.spotify_client_id,
-                    client_secret=self.config.spotify_client_secret,
-                    redirect_uri=self.config.spotify_redirect_uri,
-                    scope='playlist-modify-public playlist-modify-private'
-                )
-                
                 # Use the refresh token to get a fresh access token
                 import requests
                 token_url = "https://accounts.spotify.com/api/token"
@@ -85,21 +77,8 @@ class OverloadSpotifySync:
                     token_data = response.json()
                     logger.info("Successfully refreshed access token")
                     
-                    # Create the token info structure that spotipy expects
-                    token_info = {
-                        'access_token': token_data['access_token'],
-                        'token_type': token_data['token_type'],
-                        'expires_in': token_data['expires_in'],
-                        'expires_at': int(time.time()) + token_data['expires_in'],
-                        'scope': token_data.get('scope', 'playlist-modify-public playlist-modify-private'),
-                        'refresh_token': token_data.get('refresh_token', refresh_token)  # Use new refresh token if provided
-                    }
-                    
-                    # Set the token info on the auth manager
-                    auth_manager.token_info = token_info
-                    
-                    # Create Spotify client
-                    spotify_client = spotipy.Spotify(auth_manager=auth_manager)
+                    # Create Spotify client directly with the access token (bypass SpotifyOAuth)
+                    spotify_client = spotipy.Spotify(auth=token_data['access_token'])
                     
                     # Test the connection
                     try:
