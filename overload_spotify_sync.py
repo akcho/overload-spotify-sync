@@ -1146,27 +1146,21 @@ class OverloadSpotifySync:
     
     def get_or_create_playlist(self) -> str:
         """Get existing playlist or create new one"""
-        user_id = self.spotify.current_user()['id']
-        cache_file = '.playlist_cache'
+        # Use hardcoded playlist ID
+        playlist_id = '4dgLGz7JuWwtls5yYXva0f'
         
-        # Check for environment variable playlist ID first (for GitHub Actions)
-        env_playlist_id = os.getenv('SPOTIFY_PLAYLIST_ID')
-        if env_playlist_id and env_playlist_id.strip():
-            try:
-                cached_playlist = self.spotify.playlist(env_playlist_id.strip())
-                if cached_playlist['name'] == self.config.playlist_name:
-                    logger.info(f"Using environment playlist: {cached_playlist['name']} ({env_playlist_id})")
-                    return env_playlist_id.strip()
-                else:
-                    logger.info(f"Environment playlist name mismatch: '{cached_playlist['name']}' != '{self.config.playlist_name}'")
-            except Exception as e:
-                logger.info(f"Environment playlist ID invalid: {e}")
-        
-        # Check cache file next
-        if os.path.exists(cache_file):
-            try:
-                with open(cache_file, 'r') as f:
-                    cached_id = f.read().strip()
+        try:
+            playlist = self.spotify.playlist(playlist_id)
+            logger.info(f"Using playlist: {playlist['name']} ({playlist_id})")
+            return playlist_id
+        except Exception as e:
+            logger.error(f"Could not access hardcoded playlist {playlist_id}: {e}")
+            # Fallback to cache file if hardcoded ID fails
+            cache_file = '.playlist_cache'
+            if os.path.exists(cache_file):
+                try:
+                    with open(cache_file, 'r') as f:
+                        cached_id = f.read().strip()
                 
                 # Verify cached playlist still exists and has correct name
                 try:
