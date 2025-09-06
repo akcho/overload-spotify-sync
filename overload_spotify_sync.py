@@ -1161,9 +1161,8 @@ class OverloadSpotifySync:
                 try:
                     with open(cache_file, 'r') as f:
                         cached_id = f.read().strip()
-                
-                # Verify cached playlist still exists and has correct name
-                try:
+                    
+                    # Verify cached playlist still exists and has correct name
                     cached_playlist = self.spotify.playlist(cached_id)
                     if cached_playlist['name'] == self.config.playlist_name:
                         logger.info(f"Using cached playlist: {cached_playlist['name']} ({cached_id})")
@@ -1171,9 +1170,7 @@ class OverloadSpotifySync:
                     else:
                         logger.info(f"Cached playlist name changed, ignoring cache")
                 except Exception:
-                    logger.info(f"Cached playlist no longer exists, ignoring cache")
-            except Exception:
-                logger.info(f"Could not read playlist cache")
+                    logger.info(f"Could not read cache file or access cached playlist")
         
         # Search for existing playlist using current_user_playlists
         logger.info(f"Searching for playlist: '{self.config.playlist_name}'")
