@@ -102,18 +102,25 @@ class OverloadSpotifySync:
                     spotify_client = spotipy.Spotify(auth_manager=auth_manager)
                     
                     # Test the connection
-                    user_info = spotify_client.current_user()
-                    logger.info(f"Successfully authenticated as: {user_info.get('display_name', user_info.get('id', 'Unknown'))}")
-                    
-                    return spotify_client
+                    try:
+                        user_info = spotify_client.current_user()
+                        logger.info(f"Successfully authenticated as: {user_info.get('display_name', user_info.get('id', 'Unknown'))}")
+                        return spotify_client
+                    except Exception as test_error:
+                        logger.error(f"Token is valid but API test failed: {test_error}")
+                        if os.getenv('GITHUB_ACTIONS'):
+                            raise Exception(f"Spotify API test failed in GitHub Actions: {test_error}")
+                        # In local development, fall back to interactive auth
                 else:
                     logger.error(f"Token refresh failed with status {response.status_code}: {response.text}")
+                    if os.getenv('GITHUB_ACTIONS'):
+                        raise Exception(f"Token refresh failed in GitHub Actions: {response.status_code} - {response.text}")
                     
             except Exception as e:
                 logger.error(f"Refresh token authentication failed: {e}")
                 # In GitHub Actions, we should fail here rather than falling back to interactive
                 if os.getenv('GITHUB_ACTIONS'):
-                    raise Exception("Authentication failed in GitHub Actions environment")
+                    raise Exception(f"Authentication failed in GitHub Actions environment: {e}")
         
         logger.info("Using interactive authentication (local development only)")
         # Use standard OAuth flow for local development
