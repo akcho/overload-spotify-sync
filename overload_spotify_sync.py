@@ -1149,7 +1149,20 @@ class OverloadSpotifySync:
         user_id = self.spotify.current_user()['id']
         cache_file = '.playlist_cache'
         
-        # Check cache file first
+        # Check for environment variable playlist ID first (for GitHub Actions)
+        env_playlist_id = os.getenv('SPOTIFY_PLAYLIST_ID')
+        if env_playlist_id and env_playlist_id.strip():
+            try:
+                cached_playlist = self.spotify.playlist(env_playlist_id.strip())
+                if cached_playlist['name'] == self.config.playlist_name:
+                    logger.info(f"Using environment playlist: {cached_playlist['name']} ({env_playlist_id})")
+                    return env_playlist_id.strip()
+                else:
+                    logger.info(f"Environment playlist name mismatch: '{cached_playlist['name']}' != '{self.config.playlist_name}'")
+            except Exception as e:
+                logger.info(f"Environment playlist ID invalid: {e}")
+        
+        # Check cache file next
         if os.path.exists(cache_file):
             try:
                 with open(cache_file, 'r') as f:
