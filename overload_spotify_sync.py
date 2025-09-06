@@ -1176,12 +1176,15 @@ class OverloadSpotifySync:
         while playlists and page <= 5:  # Check first 5 pages
             logger.info(f"Checking page {page} ({len(playlists['items'])} playlists)")
             for playlist in playlists['items']:
+                logger.debug(f"  → Found playlist: '{playlist['name']}'")
                 if playlist['name'] == self.config.playlist_name:
                     logger.info(f"Found existing playlist: {playlist['name']} ({playlist['id']})")
                     # Cache the result
                     with open(cache_file, 'w') as f:
                         f.write(playlist['id'])
                     return playlist['id']
+                elif 'theoverload' in playlist['name'].lower():
+                    logger.info(f"Similar playlist found: '{playlist['name']}' (target: '{self.config.playlist_name}')")
                     
             # Check next page if exists  
             if playlists['next'] and page < 5:
