@@ -805,6 +805,7 @@ class OverloadSpotifySync:
         label_patterns = [
             r'^(.+?)\s*[-–—]\s*(.+?)\s*\[(.+?)\]',  # "Artist - Track [Label]" -> try "Artist - Track"
             r'^(.+?)\s*[-–—]\s*(.+?)\s*\((.+?)\s*Records?\)',  # "Artist - Track (Label Records)"
+            r'^(.+?)\s*[-–—]\s*(.+?)\s*[-–—]\s*(.+?)$',  # "Artist - Track - Label" -> try "Artist - Track"
             r'^(.+?)\s+Records?\s*[-–—]\s*(.+)',   # "Label Records - Track" -> try from post title
             r'^(.+?)\s+Recordings?\s*[-–—]\s*(.+)',  # "Label Recordings - Track"
         ]
